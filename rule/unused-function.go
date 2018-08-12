@@ -4,8 +4,16 @@ import (
 	"fmt"
 	"github.com/mgechev/revive/lint"
 	"go/ast"
+	"strings"
 	"sync"
 )
+
+/*
+Notes:
+	1. Make type checking optional?
+	2. Support methods
+	3. Avoid passing a mutex at config.go
+*/
 
 // failureCandidate defines a potential failure
 type failureCandidate struct {
@@ -75,6 +83,8 @@ func (r *UnusedFunctionRule) getFailureCandidate(pkg *lint.Package, fName string
 		r.addFailureCandidate(pkg, fName, &failureCandidate{})
 	}
 
+	r.M.Lock()
+	defer r.M.Unlock()
 	return failureCandidates[pkg][fName]
 
 }
@@ -87,6 +97,7 @@ func (r *UnusedFunctionRule) addUseToFailureCandidate(pkg *lint.Package, fName s
 // Apply applies the rule to given file.
 func (r *UnusedFunctionRule) Apply(file *lint.File, _ lint.Arguments) []lint.Failure {
 	v := lintUnusedFunction{r: r, file: file}
+	file.Pkg.TypeCheck()
 	ast.Walk(v, file.AST)
 
 	var failures []lint.Failure
@@ -143,6 +154,14 @@ func (v lintUnusedFunction) Visit(node ast.Node) ast.Visitor {
 		fbw := functionBodyWalker{pkg: v.file.Pkg, f: n, r: v.r}
 		ast.Walk(fbw, n.Body)
 		return nil
+	case *ast.FuncLit:
+		if n.Body == nil {
+			return v
+		}
+
+		fbw := functionBodyWalker{pkg: v.file.Pkg, f: &ast.FuncDecl{}, r: v.r}
+		ast.Walk(fbw, n.Body)
+		return nil
 	}
 
 	return v
@@ -162,8 +181,21 @@ func (v functionBodyWalker) Visit(node ast.Node) ast.Visitor {
 		if !ok {
 			return v // ignore calls of type pkgname.funcName
 		}
+
 		fc := v.r.getFailureCandidate(v.pkg, id.Name)
 		fc.addUser(v.f)
+	case *ast.Ident:
+		o, ok := v.pkg.TypesInfo.Uses[n]
+		if !ok {
+			return v
+		}
+
+		typeName := o.Type().Underlying().String()
+
+		if strings.HasPrefix(typeName, "func(") {
+			fc := v.r.getFailureCandidate(v.pkg, n.Name)
+			fc.addUser(v.f)
+		}
 	}
 
 	return v
