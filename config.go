@@ -6,6 +6,7 @@ import (
 	"io/ioutil"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/mgechev/dots"
 
@@ -60,7 +61,7 @@ var allRules = append([]lint.Rule{
 	&rule.FlagParamRule{},
 	&rule.UnnecessaryStmtRule{},
 	&rule.StructTagRule{},
-	&rule.PkgLevelFailuresTestRule{},
+	&rule.UnusedFunctionRule{sync.Mutex{}},
 }, defaultRules...)
 
 var allFormatters = []lint.Formatter{

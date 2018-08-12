@@ -163,11 +163,11 @@ func (p *Package) lint(rules []Rule, config Config, failures chan Failure) {
 	// Here we know that all files of the package where analyzed
 
 	for _, currentRule := range rules { // We iterate over all rules and,
-		rr, ok := currentRule.(Reducer) //
-		if !ok {                        // if available,
-			continue //
-		} //
-		//
+		rr, ok := currentRule.(Reducer)
+		if !ok { // if not a package-level rule
+			continue
+		}
+
 		pkgLevelFailures := rr.Reduce(p) // we call the Reduce method
 
 		// The following code is a c&p of the code of file.lint method
@@ -182,7 +182,7 @@ func (p *Package) lint(rules []Rule, config Config, failures chan Failure) {
 			}
 			pkgLevelFailures[idx].Failure = failure
 		}
-		// failure filtering skiped for simplicity
+		// failure filtering skiped for simplicity TODO
 		for _, gFailure := range pkgLevelFailures {
 			failure := gFailure.Failure
 			if failure.Confidence >= config.Confidence {
