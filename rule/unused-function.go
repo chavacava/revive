@@ -12,7 +12,6 @@ import (
 Notes:
 	1. Make type checking optional?
 	2. Support methods
-	3. Avoid passing a mutex at config.go
 */
 
 // function represents functions of the linted source code
@@ -143,6 +142,7 @@ func (v lintUnusedFunction) Visit(node ast.Node) ast.Visitor {
 	switch n := node.(type) {
 	case *ast.FuncDecl:
 		mustAddAsCandidate := !ast.IsExported(n.Name.Name) && n.Name.Name != "main" && n.Name.Name != "init" && n.Recv == nil
+
 		if mustAddAsCandidate {
 			v.r.addFunction(v.file.Pkg, n.Name.Name, &function{file: v.file, node: n, usedBy: []*ast.FuncDecl{}})
 		}
@@ -197,24 +197,11 @@ func (w functionBodyWalker) Visit(node ast.Node) ast.Visitor {
 		fc := w.r.getFunction(w.pkg, id.Name)
 		fc.addUser(w.f)
 	case *ast.Ident:
-		/*	if n.Name == "ifFoldHandler" {
-			println("Walking on ident\t", n.Name)
-			println(len(w.pkg.TypesInfo.Types))
-			for k, v := range w.pkg.TypesInfo.Types {
-				fmt.Printf("%T\t--\t%+v\t--\t%+v\n", k, k, v)
-			}
-		}*/
-		var typeName string
-		o, ok := w.pkg.TypesInfo.Uses[n]
+		tv, ok := w.pkg.TypesInfo.Types[n]
 		if !ok {
-			tv, ok := w.pkg.TypesInfo.Types[n]
-			if !ok {
-				return w
-			}
-			typeName = tv.Type.Underlying().String()
-		} else {
-			typeName = o.Type().Underlying().String()
+			return w
 		}
+		typeName := tv.Type.Underlying().String()
 
 		if strings.HasPrefix(typeName, "func(") {
 			f := w.r.getFunction(w.pkg, n.Name)
