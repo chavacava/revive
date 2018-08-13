@@ -3,12 +3,10 @@ package main
 import (
 	"flag"
 	"fmt"
+	"github.com/mgechev/dots"
 	"io/ioutil"
 	"os"
 	"strings"
-	"sync"
-
-	"github.com/mgechev/dots"
 
 	"github.com/mgechev/revive/formatter"
 
@@ -61,7 +59,7 @@ var allRules = append([]lint.Rule{
 	&rule.FlagParamRule{},
 	&rule.UnnecessaryStmtRule{},
 	&rule.StructTagRule{},
-	&rule.UnusedFunctionRule{sync.Mutex{}},
+	&rule.UnusedFunctionRule{},
 }, defaultRules...)
 
 var allFormatters = []lint.Formatter{

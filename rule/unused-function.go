@@ -15,17 +15,17 @@ Notes:
 	3. Avoid passing a mutex at config.go
 */
 
-// failureCandidate defines a potential failure
-type failureCandidate struct {
-	file   *lint.File
-	f      *ast.FuncDecl
-	usedBy []*ast.FuncDecl
+// function represents functions of the linted source code
+type function struct {
+	file   *lint.File      // file where this function is defined
+	node   *ast.FuncDecl   // ast node holding the declaration of this function
+	usedBy []*ast.FuncDecl // declaration nodes of functions that use this function
 	m      sync.Mutex
 }
 
-func (fc *failureCandidate) isUsedBy(f *ast.FuncDecl) bool {
-	for _, user := range fc.usedBy {
-		if f == user {
+func (f *function) isUsedBy(u *ast.FuncDecl) bool {
+	for _, user := range f.usedBy { // TODO can be optimized in performance
+		if u == user {
 			return true
 		}
 	}
@@ -33,64 +33,64 @@ func (fc *failureCandidate) isUsedBy(f *ast.FuncDecl) bool {
 	return false
 }
 
-func (fc *failureCandidate) isUsed() bool {
-	return len(fc.usedBy) != 0
+func (f *function) isUsed() bool {
+	return len(f.usedBy) != 0
 }
 
-func (fc *failureCandidate) addUser(f *ast.FuncDecl) {
-	if fc.isUsedBy(f) {
-		return
+func (f *function) addUser(u *ast.FuncDecl) {
+	if f.isUsedBy(u) {
+		return // do not add a duplicate entry in usedBy list
 	}
-	fc.m.Lock()
-	fc.usedBy = append(fc.usedBy, f)
-	fc.m.Unlock()
+	f.m.Lock()
+	f.usedBy = append(f.usedBy, u)
+	f.m.Unlock()
 }
 
 // UnusedFunctionRule checks for unused (private) functions and methods
 type UnusedFunctionRule struct {
-	M sync.Mutex
+	m sync.Mutex
 }
 
-// map[pkg]->map[functionName]failureCandidate{}
-var failureCandidates map[*lint.Package]map[string]*failureCandidate = map[*lint.Package]map[string]*failureCandidate{}
+// map[pkg]->map[functionName]function
+var functions map[*lint.Package]map[string]*function = map[*lint.Package]map[string]*function{}
 
-func (r *UnusedFunctionRule) addFailureCandidate(pkg *lint.Package, fName string, fc *failureCandidate) {
-	r.M.Lock()
-	if _, ok := failureCandidates[pkg]; !ok {
-		failureCandidates[pkg] = map[string]*failureCandidate{}
+func (r *UnusedFunctionRule) addFunction(pkg *lint.Package, fName string, fc *function) {
+	r.m.Lock()
+	if _, ok := functions[pkg]; !ok {
+		functions[pkg] = map[string]*function{}
 	}
-	pkgFuncs := failureCandidates[pkg]
+	pkgFuncs := functions[pkg]
 	if _, ok := pkgFuncs[fName]; !ok {
-		pkgFuncs[fName] = &failureCandidate{}
+		pkgFuncs[fName] = &function{}
 	}
-	fCandidate := pkgFuncs[fName]
-	fCandidate.f = fc.f
-	fCandidate.file = fc.file
-	fCandidate.usedBy = append(fCandidate.usedBy, fc.usedBy...)
-	r.M.Unlock()
+	f := pkgFuncs[fName]
+	f.node = fc.node
+	f.file = fc.file
+	f.usedBy = append(f.usedBy, fc.usedBy...)
+	r.m.Unlock()
 }
 
-func (r *UnusedFunctionRule) getFailureCandidate(pkg *lint.Package, fName string) *failureCandidate {
-	r.M.Lock()
-	pkgFuncs, ok := failureCandidates[pkg]
+func (r *UnusedFunctionRule) getFunction(pkg *lint.Package, fName string) *function {
+	r.m.Lock()
+	pkgFuncs, ok := functions[pkg]
 
 	if ok {
 		_, ok = pkgFuncs[fName]
 	}
-	r.M.Unlock()
+	r.m.Unlock()
 
 	if !ok {
-		r.addFailureCandidate(pkg, fName, &failureCandidate{})
+		r.addFunction(pkg, fName, &function{})
 	}
 
-	r.M.Lock()
-	defer r.M.Unlock()
-	return failureCandidates[pkg][fName]
+	r.m.Lock()
+	defer r.m.Unlock()
+	return functions[pkg][fName]
 
 }
 
-func (r *UnusedFunctionRule) addUseToFailureCandidate(pkg *lint.Package, fName string, usedBy *ast.FuncDecl) {
-	fc := r.getFailureCandidate(pkg, fName)
+func (r *UnusedFunctionRule) addUseToFunction(pkg *lint.Package, fName string, usedBy *ast.FuncDecl) {
+	fc := r.getFunction(pkg, fName)
 	fc.addUser(usedBy)
 }
 
@@ -113,21 +113,21 @@ func (r *UnusedFunctionRule) Name() string {
 func (r *UnusedFunctionRule) Reduce(p *lint.Package) []lint.PkgLevelFailure {
 	result := []lint.PkgLevelFailure{}
 
-	pkgFuncs, ok := failureCandidates[p]
+	pkgFuncs, ok := functions[p]
 	if !ok {
 		return result
 	}
 
 	for k, v := range pkgFuncs {
-		if v.isUsed() || v.f == nil {
+		if v.isUsed() || v.node == nil {
 			continue
 		}
 
 		result = append(result, lint.PkgLevelFailure{File: v.file, Failure: lint.Failure{
-			Confidence: 1,
-			Node:       v.f,
-			Category:   "style",
-			Failure:    fmt.Sprintf("Function %s is unused", k),
+			Confidence: 0.8,
+			Node:       v.node,
+			Category:   "bad practice",
+			Failure:    fmt.Sprintf("Function '%s' seems to be unused", k),
 		}})
 	}
 
@@ -144,7 +144,7 @@ func (v lintUnusedFunction) Visit(node ast.Node) ast.Visitor {
 	case *ast.FuncDecl:
 		mustAddAsCandidate := !ast.IsExported(n.Name.Name) && n.Name.Name != "main" && n.Name.Name != "init" && n.Recv == nil
 		if mustAddAsCandidate {
-			v.r.addFailureCandidate(v.file.Pkg, n.Name.Name, &failureCandidate{file: v.file, f: n, usedBy: []*ast.FuncDecl{}})
+			v.r.addFunction(v.file.Pkg, n.Name.Name, &function{file: v.file, node: n, usedBy: []*ast.FuncDecl{}})
 		}
 
 		if n.Body == nil {
@@ -162,10 +162,22 @@ func (v lintUnusedFunction) Visit(node ast.Node) ast.Visitor {
 		fbw := functionBodyWalker{pkg: v.file.Pkg, f: &ast.FuncDecl{}, r: v.r}
 		ast.Walk(fbw, n.Body)
 		return nil
+	case *ast.Ident:
+		pkg := v.file.Pkg
+		o, ok := pkg.TypesInfo.Uses[n]
+		if !ok {
+			return v
+		}
+
+		typeName := o.Type().Underlying().String()
+
+		if strings.HasPrefix(typeName, "func(") {
+			f := v.r.getFunction(pkg, n.Name)
+			f.addUser(nil)
+		}
 	}
 
 	return v
-	// TODO handle methods!
 }
 
 type functionBodyWalker struct {
@@ -174,29 +186,41 @@ type functionBodyWalker struct {
 	r   *UnusedFunctionRule
 }
 
-func (v functionBodyWalker) Visit(node ast.Node) ast.Visitor {
+func (w functionBodyWalker) Visit(node ast.Node) ast.Visitor {
 	switch n := node.(type) {
 	case *ast.CallExpr:
 		id, ok := n.Fun.(*ast.Ident)
 		if !ok {
-			return v // ignore calls of type pkgname.funcName
+			return w // ignore calls of type pkgname.funcName
 		}
 
-		fc := v.r.getFailureCandidate(v.pkg, id.Name)
-		fc.addUser(v.f)
+		fc := w.r.getFunction(w.pkg, id.Name)
+		fc.addUser(w.f)
 	case *ast.Ident:
-		o, ok := v.pkg.TypesInfo.Uses[n]
+		/*	if n.Name == "ifFoldHandler" {
+			println("Walking on ident\t", n.Name)
+			println(len(w.pkg.TypesInfo.Types))
+			for k, v := range w.pkg.TypesInfo.Types {
+				fmt.Printf("%T\t--\t%+v\t--\t%+v\n", k, k, v)
+			}
+		}*/
+		var typeName string
+		o, ok := w.pkg.TypesInfo.Uses[n]
 		if !ok {
-			return v
+			tv, ok := w.pkg.TypesInfo.Types[n]
+			if !ok {
+				return w
+			}
+			typeName = tv.Type.Underlying().String()
+		} else {
+			typeName = o.Type().Underlying().String()
 		}
-
-		typeName := o.Type().Underlying().String()
 
 		if strings.HasPrefix(typeName, "func(") {
-			fc := v.r.getFailureCandidate(v.pkg, n.Name)
-			fc.addUser(v.f)
+			f := w.r.getFunction(w.pkg, n.Name)
+			f.addUser(w.f)
 		}
 	}
 
-	return v
+	return w
 }
