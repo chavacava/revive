@@ -45,53 +45,56 @@ func (f *function) addUser(u *ast.FuncDecl) {
 	f.m.Unlock()
 }
 
-// UnusedFunctionRule checks for unused (private) functions and methods
-type UnusedFunctionRule struct {
-	m sync.Mutex
+type pkg2Functions struct {
+	sync.Mutex
+	funcs map[*lint.Package]map[string]*function
 }
 
-// map[pkg]->map[functionName]function
-var functions map[*lint.Package]map[string]*function = map[*lint.Package]map[string]*function{}
-
-func (r *UnusedFunctionRule) addFunction(pkg *lint.Package, fName string, fc *function) {
-	r.m.Lock()
-	if _, ok := functions[pkg]; !ok {
-		functions[pkg] = map[string]*function{}
+func (p2f *pkg2Functions) addFunction(pkg *lint.Package, fName string, nf *function) {
+	p2f.Lock()
+	if _, ok := p2f.funcs[pkg]; !ok {
+		p2f.funcs[pkg] = map[string]*function{}
 	}
-	pkgFuncs := functions[pkg]
+	pkgFuncs := p2f.funcs[pkg]
 	if _, ok := pkgFuncs[fName]; !ok {
 		pkgFuncs[fName] = &function{}
 	}
 	f := pkgFuncs[fName]
-	f.node = fc.node
-	f.file = fc.file
-	f.usedBy = append(f.usedBy, fc.usedBy...)
-	r.m.Unlock()
+	f.node = nf.node
+	f.file = nf.file
+	f.usedBy = append(f.usedBy, nf.usedBy...)
+	p2f.Unlock()
 }
 
-func (r *UnusedFunctionRule) getFunction(pkg *lint.Package, fName string) *function {
-	r.m.Lock()
-	pkgFuncs, ok := functions[pkg]
+func (p2f *pkg2Functions) getFunction(pkg *lint.Package, fName string) *function {
+	p2f.Lock()
+	pkgFuncs, ok := p2f.funcs[pkg]
 
 	if ok {
 		_, ok = pkgFuncs[fName]
 	}
-	r.m.Unlock()
+	p2f.Unlock()
 
 	if !ok {
-		r.addFunction(pkg, fName, &function{})
+		p2f.addFunction(pkg, fName, &function{})
 	}
 
-	r.m.Lock()
-	defer r.m.Unlock()
-	return functions[pkg][fName]
+	p2f.Lock()
+	defer p2f.Unlock()
+	return p2f.funcs[pkg][fName]
 
 }
 
-func (r *UnusedFunctionRule) addUseToFunction(pkg *lint.Package, fName string, usedBy *ast.FuncDecl) {
-	fc := r.getFunction(pkg, fName)
-	fc.addUser(usedBy)
+func (p2f *pkg2Functions) addUseToFunction(pkg *lint.Package, fName string, usedBy *ast.FuncDecl) {
+	f := p2f.getFunction(pkg, fName)
+	f.addUser(usedBy)
 }
+
+// map[pkg]->map[functionName]function
+var functions = pkg2Functions{funcs: map[*lint.Package]map[string]*function{}}
+
+// UnusedFunctionRule checks for unused (private) functions and methods
+type UnusedFunctionRule struct{}
 
 // Apply applies the rule to given file.
 func (r *UnusedFunctionRule) Apply(file *lint.File, _ lint.Arguments) []lint.Failure {
@@ -112,7 +115,7 @@ func (r *UnusedFunctionRule) Name() string {
 func (r *UnusedFunctionRule) Reduce(p *lint.Package) []lint.PkgLevelFailure {
 	result := []lint.PkgLevelFailure{}
 
-	pkgFuncs, ok := functions[p]
+	pkgFuncs, ok := functions.funcs[p] // retrieve functions of package p
 	if !ok {
 		return result
 	}
@@ -144,7 +147,7 @@ func (v lintUnusedFunction) Visit(node ast.Node) ast.Visitor {
 		mustAddAsCandidate := !ast.IsExported(n.Name.Name) && n.Name.Name != "main" && n.Name.Name != "init" && n.Recv == nil
 
 		if mustAddAsCandidate {
-			v.r.addFunction(v.file.Pkg, n.Name.Name, &function{file: v.file, node: n, usedBy: []*ast.FuncDecl{}})
+			functions.addFunction(v.file.Pkg, n.Name.Name, &function{file: v.file, node: n, usedBy: []*ast.FuncDecl{}})
 		}
 
 		if n.Body == nil {
@@ -172,7 +175,7 @@ func (v lintUnusedFunction) Visit(node ast.Node) ast.Visitor {
 		typeName := o.Type().Underlying().String()
 
 		if strings.HasPrefix(typeName, "func(") {
-			f := v.r.getFunction(pkg, n.Name)
+			f := functions.getFunction(pkg, n.Name)
 			f.addUser(nil)
 		}
 	}
@@ -194,7 +197,7 @@ func (w functionBodyWalker) Visit(node ast.Node) ast.Visitor {
 			return w // ignore calls of type pkgname.funcName
 		}
 
-		fc := w.r.getFunction(w.pkg, id.Name)
+		fc := functions.getFunction(w.pkg, id.Name)
 		fc.addUser(w.f)
 	case *ast.Ident:
 		tv, ok := w.pkg.TypesInfo.Types[n]
@@ -204,7 +207,7 @@ func (w functionBodyWalker) Visit(node ast.Node) ast.Visitor {
 		typeName := tv.Type.Underlying().String()
 
 		if strings.HasPrefix(typeName, "func(") {
-			f := w.r.getFunction(w.pkg, n.Name)
+			f := functions.getFunction(w.pkg, n.Name)
 			f.addUser(w.f)
 		}
 	}
